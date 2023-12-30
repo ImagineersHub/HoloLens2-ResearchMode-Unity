@@ -1,0 +1,15 @@
+ {
+     "name": "com.imagineershub.hl2Unityplugin",
+     "displayName": "Imagineerhub-Hololens2-Unity-Plugin",
+     "version": "1.0.0",
+     "unity": "2021.3",
+     "description": "This package contains the Imagineerhub Hololens2 Unity Plugin, which is a collection of interfaces and utilities to access hololens hardware sensor data and other features.",
+     "keywords": [
+         "mrtk",
+         "unity",
+         "hololens2"
+     ],
+     "author": "Imagineerhub",
+     "license": "MIT",
+     "dependencies": {}
+ }

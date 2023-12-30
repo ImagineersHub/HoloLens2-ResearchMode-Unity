@@ -7,6 +7,7 @@ using TMPro;
 
 #if ENABLE_WINMD_SUPPORT
 using HL2UnityPlugin;
+using Windows.Perception.Spatial;
 #endif
 
 public class ResearchModeVideoStream : MonoBehaviour
@@ -68,14 +69,7 @@ public class ResearchModeVideoStream : MonoBehaviour
     private void Awake()
     {
 #if ENABLE_WINMD_SUPPORT
-#if UNITY_2020_1_OR_NEWER // note: Unity 2021.2 and later not supported
-        IntPtr WorldOriginPtr = UnityEngine.XR.WindowsMR.WindowsMREnvironment.OriginSpatialCoordinateSystem;
-        unityWorldOrigin = Marshal.GetObjectForIUnknown(WorldOriginPtr) as Windows.Perception.Spatial.SpatialCoordinateSystem;
-        //unityWorldOrigin = Windows.Perception.Spatial.SpatialLocator.GetDefault().CreateStationaryFrameOfReferenceAtCurrentLocation().CoordinateSystem;
-#else
-        IntPtr WorldOriginPtr = UnityEngine.XR.WSA.WorldManager.GetNativeISpatialCoordinateSystemPtr();
-        unityWorldOrigin = Marshal.GetObjectForIUnknown(WorldOriginPtr) as Windows.Perception.Spatial.SpatialCoordinateSystem;
-#endif
+        unityWorldOrigin = PerceptionInterop.GetSceneCoordinateSystem(UnityEngine.Pose.identity) as SpatialCoordinateSystem;
 #endif
     }
     void Start()
@@ -98,7 +92,7 @@ public class ResearchModeVideoStream : MonoBehaviour
             longDepthPreviewPlane.SetActive(false);
             longAbImagePreviewPlane.SetActive(false);
         }
-        
+
         if (depthSensorMode == DepthSensorMode.LongThrow)
         {
             if (longDepthPreviewPlane != null)
@@ -117,7 +111,7 @@ public class ResearchModeVideoStream : MonoBehaviour
             depthPreviewPlane.SetActive(false);
             shortAbImagePreviewPlane.SetActive(false);
         }
-        
+
 
         if (LFPreviewPlane != null)
         {
