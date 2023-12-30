@@ -82,13 +82,13 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM'">
-    <OutDir>$(SolutionDir)\UnitySample\Assets\Plugins\HL2UnityPlugin\$(Platform)\$(Configuration)\$(MSBuildProjectName)\</OutDir>
+    <OutDir>$(SolutionDir)\UnitySample\Assets\Plugins\HL2UnityPlugin\$(Platform)\</OutDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <OutDir>$(SolutionDir)\UnitySample\Assets\Plugins\HL2UnityPlugin\$(Platform)\$(Configuration)\$(MSBuildProjectName)\</OutDir>
+    <OutDir>$(SolutionDir)\UnitySample\Assets\Plugins\HL2UnityPlugin\$(Platform)\</OutDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">
-    <OutDir>$(SolutionDir)\UnitySample\Assets\Plugins\HL2UnityPlugin\$(Platform)\$(Configuration)\$(MSBuildProjectName)\</OutDir>
+    <OutDir>$(SolutionDir)\UnitySample\Assets\Plugins\HL2UnityPlugin\$(Platform)\</OutDir>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
