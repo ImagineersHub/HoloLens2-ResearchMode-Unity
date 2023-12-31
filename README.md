@@ -37,6 +37,10 @@ To use it in Unity,
 `<DeviceCapability Name="backgroundSpatialPerception"/>` is only necessary if you use IMU sensor. 
 - Save the changes and deploy the solution to your HoloLens 2.
 
+## Import unity package:
+```
+"com.imagineershub.hl2unityplugin.arm": "https://github.com/ImagineersHub/HoloLens2-ResearchMode-Unity.git?path=UnitySample/Assets/Plugins/HL2UnityPlugin/ARM#master",
+```
 
 ## Note:
 - The reconstructed point cloud still has the offset problem as is described [here](https://github.com/microsoft/HoloLens2ForCV/issues/12) for object beyond 1m.
