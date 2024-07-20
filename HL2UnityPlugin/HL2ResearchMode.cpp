@@ -1101,7 +1101,10 @@ namespace winrt::HL2UnityPlugin::implementation
         }
         return ss.str();
     }
-    
+    void HL2ResearchMode::StopDepthSensorLoop()
+    {
+        m_depthSensorLoopStarted = false;
+    }
     // Stop the sensor loop and release buffer space.
     // Sensor object should be released at the end of the loop function
     void HL2ResearchMode::StopAllSensorDevice()

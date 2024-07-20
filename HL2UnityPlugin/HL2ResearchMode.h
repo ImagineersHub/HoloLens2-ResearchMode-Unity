@@ -49,6 +49,7 @@ namespace winrt::HL2UnityPlugin::implementation
         void StartMagSensorLoop();
 
         void StopAllSensorDevice();
+        void StopDepthSensorLoop();
 
         bool DepthMapTextureUpdated();
         bool ShortAbImageTextureUpdated();
