@@ -228,88 +228,113 @@ namespace winrt::HL2UnityPlugin::implementation
 
     void HL2ResearchMode::StartDepthSensorLoop(bool reconstructPointCloud)
     {
-        // std::thread th1([this] {this->DepthSensorLoopTest(); });
+        // Check if the loop is already running
+        if (m_depthSensorLoopStarted)
+        {
+            OutputDebugString(L"Depth sensor loop is already running. Stop it first before restarting.\n");
+            return;
+        }
+
+        // Reset necessary variables and allocate resources
+        m_depthSensorLoopStarted = false;
+        m_reconstructShortThrowPointCloud = reconstructPointCloud;
+
+        // Reinitialize the depth sensor if it was released
+        if (m_depthSensor == nullptr)
+        {
+            InitializeDepthSensor();
+        }
+
+        // Set up reference frame if needed
         if (reconstructPointCloud && m_refFrame == nullptr)
         {
             m_refFrame = m_locator.GetDefault().CreateStationaryFrameOfReferenceAtCurrentLocation().CoordinateSystem();
         }
-        m_reconstructShortThrowPointCloud = reconstructPointCloud;
 
+        // Check for camera consent
         if (SUCCEEDED(CheckCamConsent()))
+        {
+            // Create and start the depth sensor thread
             m_pDepthUpdateThread = new std::thread(HL2ResearchMode::DepthSensorLoop, this);
+        }
+        else
+        {
+            OutputDebugString(L"Failed to get camera consent. Depth sensor loop not started.\n");
+        }
     }
 
     void HL2ResearchMode::DepthSensorLoop(HL2ResearchMode *pHL2ResearchMode)
     {
-        // prevent starting loop for multiple times
         if (!pHL2ResearchMode->m_depthSensorLoopStarted)
         {
             pHL2ResearchMode->m_depthSensorLoopStarted = true;
         }
-        else
+        else return;
+
+        if (pHL2ResearchMode->m_depthSensor == nullptr)
+        {
+            OutputDebugString(L"Error: Depth sensor is null.\n");
             return;
+        }
 
         pHL2ResearchMode->m_depthSensor->OpenStream();
 
         try
         {
-            UINT64 lastTs = 0;
             while (pHL2ResearchMode->m_depthSensorLoopStarted)
             {
-                IResearchModeSensorFrame *pDepthSensorFrame = nullptr;
+                IResearchModeSensorFrame* pDepthSensorFrame = nullptr;
                 ResearchModeSensorResolution resolution;
-                pHL2ResearchMode->m_depthSensor->GetNextBuffer(&pDepthSensorFrame);
+                HRESULT hr = pHL2ResearchMode->m_depthSensor->GetNextBuffer(&pDepthSensorFrame);
+
+                if (FAILED(hr) || pDepthSensorFrame == nullptr)
+                {
+                    OutputDebugString(L"Failed to get next buffer. Retrying...\n");
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    continue;
+                }
 
                 ResearchModeSensorTimestamp timestamp;
                 pDepthSensorFrame->GetTimeStamp(&timestamp);
 
-                if (timestamp.HostTicks == lastTs)
-                {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(10)); // sleep for 0.01 second
-                    continue;
-                }
-                lastTs = timestamp.HostTicks;
-
-                // process sensor frame
                 pDepthSensorFrame->GetResolution(&resolution);
                 pHL2ResearchMode->m_depthResolution = resolution;
 
-                IResearchModeSensorDepthFrame *pDepthFrame = nullptr;
-                winrt::check_hresult(pDepthSensorFrame->QueryInterface(IID_PPV_ARGS(&pDepthFrame)));
+                IResearchModeSensorDepthFrame* pDepthFrame = nullptr;
+                hr = pDepthSensorFrame->QueryInterface(IID_PPV_ARGS(&pDepthFrame));
+                if (FAILED(hr))
+                {
+                    OutputDebugString(L"Failed to get depth frame.\n");
+                    pDepthSensorFrame->Release();
+                    continue;
+                }
 
                 size_t outBufferCount = 0;
-                const UINT16 *pDepth = nullptr;
+                const UINT16* pDepth = nullptr;
                 pDepthFrame->GetBuffer(&pDepth, &outBufferCount);
                 pHL2ResearchMode->m_depthBufferSize = outBufferCount;
-                size_t outAbBufferCount = 0;
-                const UINT16 *pAbImage = nullptr;
-                pDepthFrame->GetAbDepthBuffer(&pAbImage, &outAbBufferCount);
 
-                auto pDepthTexture = std::make_unique<uint8_t[]>(outBufferCount);
-                auto pAbTexture = std::make_unique<uint8_t[]>(outAbBufferCount);
+                std::vector<uint8_t> depthTexture(outBufferCount);
                 std::vector<float> pointCloud;
 
                 // get tracking transform
                 Windows::Perception::Spatial::SpatialLocation transToWorld = nullptr;
-                if (pHL2ResearchMode->m_reconstructShortThrowPointCloud)
+                if (pHL2ResearchMode->m_reconstructShortThrowPointCloud && pHL2ResearchMode->m_refFrame != nullptr)
                 {
-                    auto ts = PerceptionTimestampHelper::FromSystemRelativeTargetTime(HundredsOfNanoseconds(checkAndConvertUnsigned(timestamp.HostTicks)));
+                    auto ts = Windows::Perception::PerceptionTimestampHelper::FromSystemRelativeTargetTime(Windows::Foundation::TimeSpan{ checkAndConvertUnsigned(timestamp.HostTicks) * 100 });
                     transToWorld = pHL2ResearchMode->m_locator.TryLocateAtTimestamp(ts, pHL2ResearchMode->m_refFrame);
                     if (transToWorld == nullptr)
+                    {
+                        OutputDebugString(L"Failed to locate depth camera.\n");
+                        pDepthFrame->Release();
+                        pDepthSensorFrame->Release();
                         continue;
+                    }
                 }
 
-                XMMATRIX depthToWorld = XMMatrixIdentity();
-                if (pHL2ResearchMode->m_reconstructShortThrowPointCloud)
+                DirectX::XMMATRIX depthToWorld = DirectX::XMMatrixIdentity();
+                if (pHL2ResearchMode->m_reconstructShortThrowPointCloud && transToWorld != nullptr)
                     depthToWorld = pHL2ResearchMode->m_depthCameraPoseInvMatrix * SpatialLocationToDxMatrix(transToWorld);
-
-                pHL2ResearchMode->mu.lock();
-                auto roiCenterFloat = XMFLOAT3(pHL2ResearchMode->m_roiCenter[0], pHL2ResearchMode->m_roiCenter[1], pHL2ResearchMode->m_roiCenter[2]);
-                auto roiBoundFloat = XMFLOAT3(pHL2ResearchMode->m_roiBound[0], pHL2ResearchMode->m_roiBound[1], pHL2ResearchMode->m_roiBound[2]);
-                pHL2ResearchMode->mu.unlock();
-
-                XMVECTOR roiCenter = XMLoadFloat3(&roiCenterFloat);
-                XMVECTOR roiBound = XMLoadFloat3(&roiBoundFloat);
 
                 for (UINT i = 0; i < resolution.Height; i++)
                 {
@@ -319,69 +344,21 @@ namespace winrt::HL2UnityPlugin::implementation
                         UINT16 depth = pDepth[idx];
                         depth = (depth > 4090) ? 0 : depth - pHL2ResearchMode->m_depthOffset;
 
-                        if (pHL2ResearchMode->m_reconstructShortThrowPointCloud)
+                        if (pHL2ResearchMode->m_reconstructShortThrowPointCloud && depth > 200)
                         {
-                            // back-project point cloud within Roi
-                            if (i > pHL2ResearchMode->depthCamRoi.kRowLower * resolution.Height && i < pHL2ResearchMode->depthCamRoi.kRowUpper * resolution.Height &&
-                                j > pHL2ResearchMode->depthCamRoi.kColLower * resolution.Width && j < pHL2ResearchMode->depthCamRoi.kColUpper * resolution.Width &&
-                                depth > pHL2ResearchMode->depthCamRoi.depthNearClip && depth < pHL2ResearchMode->depthCamRoi.depthFarClip)
-                            {
-                                float xy[2] = {0, 0};
-                                float uv[2] = {j, i};
-                                pHL2ResearchMode->m_pDepthCameraSensor->MapImagePointToCameraUnitPlane(uv, xy);
-                                auto pointOnUnitPlane = XMFLOAT3(xy[0], xy[1], 1);
-                                auto tempPoint = (float)depth / 1000 * XMVector3Normalize(XMLoadFloat3(&pointOnUnitPlane));
-                                // apply transformation
-                                auto pointInWorld = XMVector3Transform(tempPoint, depthToWorld);
+                            float xy[2] = { 0, 0 };
+                            float uv[2] = { static_cast<float>(j), static_cast<float>(i) };
+                            pHL2ResearchMode->m_pDepthCameraSensor->MapImagePointToCameraUnitPlane(uv, xy);
+                            auto pointOnUnitPlane = DirectX::XMFLOAT3(xy[0], xy[1], 1);
+                            auto tempPoint = static_cast<float>(depth) / 1000.0f * DirectX::XMVector3Normalize(DirectX::XMLoadFloat3(&pointOnUnitPlane));
+                            auto pointInWorld = DirectX::XMVector3Transform(tempPoint, depthToWorld);
 
-                                // filter point cloud based on region of interest
-                                if (!pHL2ResearchMode->m_useRoiFilter ||
-                                    (pHL2ResearchMode->m_useRoiFilter && XMVector3InBounds(pointInWorld - roiCenter, roiBound)))
-                                {
-                                    pointCloud.push_back(XMVectorGetX(pointInWorld));
-                                    pointCloud.push_back(XMVectorGetY(pointInWorld));
-                                    pointCloud.push_back(-XMVectorGetZ(pointInWorld));
-                                }
-                            }
+                            pointCloud.push_back(DirectX::XMVectorGetX(pointInWorld));
+                            pointCloud.push_back(DirectX::XMVectorGetY(pointInWorld));
+                            pointCloud.push_back(-DirectX::XMVectorGetZ(pointInWorld));
                         }
 
-                        // save depth map as grayscale texture pixel into temp buffer
-                        if (depth == 0)
-                        {
-                            pDepthTexture.get()[idx] = 0;
-                        }
-                        else
-                        {
-                            pDepthTexture.get()[idx] = (uint8_t)((float)depth / 1000 * 255);
-                        }
-
-                        // save AbImage as grayscale texture pixel into temp buffer
-                        UINT16 abValue = pAbImage[idx];
-                        uint8_t processedAbValue = 0;
-                        if (abValue > 1000)
-                        {
-                            processedAbValue = 0xFF;
-                        }
-                        else
-                        {
-                            processedAbValue = (uint8_t)((float)abValue / 1000 * 255);
-                        }
-
-                        pAbTexture.get()[idx] = processedAbValue;
-
-                        // save the depth of center pixel
-                        if (pHL2ResearchMode->m_reconstructShortThrowPointCloud &&
-                            i == (UINT)(0.35 * resolution.Height) && j == (UINT)(0.5 * resolution.Width) && pointCloud.size() >= 3)
-                        {
-                            pHL2ResearchMode->m_centerDepth = depth;
-                            if (depth > pHL2ResearchMode->depthCamRoi.depthNearClip && depth < pHL2ResearchMode->depthCamRoi.depthFarClip)
-                            {
-                                std::lock_guard<std::mutex> l(pHL2ResearchMode->mu);
-                                pHL2ResearchMode->m_centerPoint[0] = *(pointCloud.end() - 3);
-                                pHL2ResearchMode->m_centerPoint[1] = *(pointCloud.end() - 2);
-                                pHL2ResearchMode->m_centerPoint[2] = *(pointCloud.end() - 1);
-                            }
-                        }
+                        depthTexture[idx] = (depth == 0) ? 0 : static_cast<uint8_t>((static_cast<float>(depth) / 1000.0f) * 255.0f);
                     }
                 }
 
@@ -389,59 +366,34 @@ namespace winrt::HL2UnityPlugin::implementation
                 {
                     std::lock_guard<std::mutex> l(pHL2ResearchMode->mu);
 
-                    // save point cloud
                     if (pHL2ResearchMode->m_reconstructShortThrowPointCloud)
                     {
-                        if (!pHL2ResearchMode->m_pointCloud)
+                        if (pHL2ResearchMode->m_pointCloud)
                         {
-                            OutputDebugString(L"Create Space for point cloud...\n");
-                            pHL2ResearchMode->m_pointCloud = new float[outBufferCount * 3];
+                            delete[] pHL2ResearchMode->m_pointCloud;
                         }
-
+                        pHL2ResearchMode->m_pointCloud = new float[pointCloud.size()];
                         memcpy(pHL2ResearchMode->m_pointCloud, pointCloud.data(), pointCloud.size() * sizeof(float));
                         pHL2ResearchMode->m_pointcloudLength = pointCloud.size();
                     }
 
-                    // save raw depth map
-                    if (!pHL2ResearchMode->m_depthMap)
+                    if (pHL2ResearchMode->m_depthMap)
                     {
-                        OutputDebugString(L"Create Space for depth map...\n");
-                        pHL2ResearchMode->m_depthMap = new UINT16[outBufferCount];
+                        delete[] pHL2ResearchMode->m_depthMap;
                     }
+                    pHL2ResearchMode->m_depthMap = new UINT16[outBufferCount];
                     memcpy(pHL2ResearchMode->m_depthMap, pDepth, outBufferCount * sizeof(UINT16));
 
-                    // save pre-processed depth map texture (for visualization)
-                    if (!pHL2ResearchMode->m_depthMapTexture)
+                    if (pHL2ResearchMode->m_depthMapTexture)
                     {
-                        OutputDebugString(L"Create Space for depth map texture...\n");
-                        pHL2ResearchMode->m_depthMapTexture = new UINT8[outBufferCount];
+                        delete[] pHL2ResearchMode->m_depthMapTexture;
                     }
-                    memcpy(pHL2ResearchMode->m_depthMapTexture, pDepthTexture.get(), outBufferCount * sizeof(UINT8));
-
-                    // save raw AbImage
-                    if (!pHL2ResearchMode->m_shortAbImage)
-                    {
-                        OutputDebugString(L"Create Space for short AbImage...\n");
-                        pHL2ResearchMode->m_shortAbImage = new UINT16[outBufferCount];
-                    }
-                    memcpy(pHL2ResearchMode->m_shortAbImage, pAbImage, outBufferCount * sizeof(UINT16));
-
-                    // save pre-processed AbImage texture (for visualization)
-                    if (!pHL2ResearchMode->m_shortAbImageTexture)
-                    {
-                        OutputDebugString(L"Create Space for short AbImage texture...\n");
-                        pHL2ResearchMode->m_shortAbImageTexture = new UINT8[outBufferCount];
-                    }
-                    memcpy(pHL2ResearchMode->m_shortAbImageTexture, pAbTexture.get(), outBufferCount * sizeof(UINT8));
+                    pHL2ResearchMode->m_depthMapTexture = new UINT8[outBufferCount];
+                    memcpy(pHL2ResearchMode->m_depthMapTexture, depthTexture.data(), outBufferCount * sizeof(UINT8));
                 }
-                pHL2ResearchMode->m_shortAbImageTextureUpdated = true;
                 pHL2ResearchMode->m_depthMapTextureUpdated = true;
-                if (pHL2ResearchMode->m_reconstructShortThrowPointCloud)
-                    pHL2ResearchMode->m_pointCloudUpdated = true;
+                if (pHL2ResearchMode->m_reconstructShortThrowPointCloud) pHL2ResearchMode->m_pointCloudUpdated = true;
 
-                pDepthTexture.reset();
-
-                // release space
                 if (pDepthFrame)
                 {
                     pDepthFrame->Release();
@@ -450,14 +402,26 @@ namespace winrt::HL2UnityPlugin::implementation
                 {
                     pDepthSensorFrame->Release();
                 }
+
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
+        }
+        catch (const std::exception& e)
+        {
+            OutputDebugStringA(("Exception in DepthSensorLoop: " + std::string(e.what()) + "\n").c_str());
         }
         catch (...)
         {
+            OutputDebugString(L"Unknown exception in DepthSensorLoop.\n");
         }
-        pHL2ResearchMode->m_depthSensor->CloseStream();
-        pHL2ResearchMode->m_depthSensor->Release();
-        pHL2ResearchMode->m_depthSensor = nullptr;
+
+        if (pHL2ResearchMode->m_depthSensor)
+        {
+            pHL2ResearchMode->m_depthSensor->CloseStream();
+            pHL2ResearchMode->m_depthSensor->Release();
+            pHL2ResearchMode->m_depthSensor = nullptr;
+        }
+
     }
 
     void HL2ResearchMode::StartLongDepthSensorLoop(bool reconstructPointCloud)
@@ -1157,6 +1121,63 @@ namespace winrt::HL2UnityPlugin::implementation
     void HL2ResearchMode::StopDepthSensorLoop()
     {
         m_depthSensorLoopStarted = false;
+
+        if (m_pDepthUpdateThread != nullptr)
+        {
+            OutputDebugString(L"Waiting for depth sensor thread to finish...\n");
+            auto start = std::chrono::high_resolution_clock::now();
+
+            while (std::chrono::high_resolution_clock::now() - start < std::chrono::seconds(5))
+            {
+                if (m_pDepthUpdateThread->joinable())
+                {
+                    m_pDepthUpdateThread->join();
+                    OutputDebugString(L"Depth sensor thread joined successfully.\n");
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+
+            if (m_pDepthUpdateThread->joinable())
+            {
+                OutputDebugString(L"Depth sensor thread did not join within timeout. Detaching thread.\n");
+                m_pDepthUpdateThread->detach();
+            }
+
+            delete m_pDepthUpdateThread;
+            m_pDepthUpdateThread = nullptr;
+        }
+
+        if (m_depthSensor)
+        {
+            m_depthSensor->CloseStream();
+            m_depthSensor->Release();
+            m_depthSensor = nullptr;
+        }
+
+        m_depthMapTextureUpdated = false;
+        m_pointCloudUpdated = false;
+
+        if (m_depthMap)
+        {
+            delete[] m_depthMap;
+            m_depthMap = nullptr;
+        }
+
+        if (m_depthMapTexture)
+        {
+            delete[] m_depthMapTexture;
+            m_depthMapTexture = nullptr;
+        }
+
+        if (m_pointCloud)
+        {
+            delete[] m_pointCloud;
+            m_pointCloud = nullptr;
+            m_pointcloudLength = 0;
+        }
+
+        OutputDebugString(L"StopDepthSensorLoop completed.\n");
     }
     // Stop the sensor loop and release buffer space.
     // Sensor object should be released at the end of the loop function
